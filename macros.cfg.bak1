@@ -1,0 +1,189 @@
+###########Macros
+
+[gcode_macro START_PRINT]
+gcode:
+    status_heating
+    {% set BED_TEMP = params.BED_TEMP|default(60)|float %}
+    {% set EXTRUDER_TEMP = params.EXTRUDER_TEMP|default(190)|float %}
+    # Start heating
+    M140 S{BED_TEMP}
+    M104 S{EXTRUDER_TEMP}
+    # Use absolute coordinates
+    G90
+    # Reset the G-Code Z offset (adjust Z offset if needed)
+    #SET_GCODE_OFFSET Z=-0.0
+    # Home the printer
+    G28
+    #probe bed mesh
+    status_mesh
+    bed_mesh_calibrate
+    # Move the nozzle to ooze zone
+    G1 X245 Y10 F3000
+    status_heating
+    # Wait for bed to reach temperature
+    M190 S{BED_TEMP}
+    # Set and wait for nozzle to reach temperature
+    M109 S{EXTRUDER_TEMP}
+    leds_off
+    #Enable Filament Sensor
+    #SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=1
+    VORON_PURGE
+[gcode_macro END_PRINT]
+gcode:    
+    # Turn off bed, extruder, and fan
+    M140 S0
+    M104 S0
+    M106 S0
+    # Move nozzle away from print while retracting
+    G91
+    G1 X-2 Y-2 E-3 F300
+    # Raise nozzle by 10mm
+    G1 Z10 F3000
+    G90
+    # Park nozzle and present print
+    G1 X245 Y220 F3000
+    #Disable Filament Sensor
+    SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=0
+    # Disable steppers
+    M84
+
+[gcode_macro _CLIENT_VARIABLE]
+gcode:
+    variable_use_custom_pos   : True ; use custom park coordinates for x,y [True/False]
+    variable_custom_park_x    : 245.0   ; custom x position; value must be within your defined min and max of X
+    variable_custom_park_y    : 117.5  ; custom y position; value must be within your defined min and max of Y
+    variable_custom_park_dz   : 2.0   ; custom dz value; the value in mm to lift the nozzle when move to park position
+    #variable_retract          : 1.0   ; the value to retract while PAUSE
+    variable_cancel_retract   : 5.0   ; the value to retract while CANCEL_PRINT
+    #variable_speed_retract    : 35.0  ; retract speed in mm/s
+    #variable_unretract        : 1.0   ; the value to unretract while RESUME
+    #variable_speed_unretract  : 35.0  ; unretract speed in mm/s
+    #variable_speed_hop        : 15.0  ; z move speed in mm/s
+    #variable_speed_move       : 100.0 ; move speed in mm/s
+    variable_park_at_cancel   : True ; allow to move the toolhead to park while execute CANCEL_PRINT [True/False]
+    variable_park_at_cancel_x : 245.0  ; different park position during CANCEL_PRINT [None/Position as Float]; park_at_cancel must be True
+    variable_park_at_cancel_y : 230.0  ; different park position during CANCEL_PRINT [None/Position as Float]; park_at_cancel must be True
+    ## !!! Caution [firmware_retraction] must be defined in the printer.cfg if you set use_fw_retract: True !!!
+    #variable_use_fw_retract   : False ; use fw_retraction instead of the manual version [True/False]
+    #variable_idle_timeout     : 0     ; time in sec until idle_timeout kicks in. Value 0 means that no value will be set or restored
+
+[gcode_macro update_git]
+gcode:
+    RUN_SHELL_COMMAND CMD=update_git_script
+
+
+######################################################################
+## Filament Change                                                  ##
+######################################################################
+# M600: Filament Change. This macro will pause the printer, move the
+# tool to the change position, and retract the filament 130mm. Adjust
+# the retraction settings for your own extruder. After filament has
+# been changed, the print can be resumed from its previous position
+# with the "SWAP_RESUME" gcode.
+[gcode_macro M600]
+########### Gcode ############
+gcode:
+  {% set X = params.X|default(printer.configfile.config["stepper_x"]["position_endstop"]|string)|int %}
+  {% set Y = params.Y|default(printer.configfile.config["stepper_y"]["position_endstop"]|string)|int %}
+  {% set Z = params.Z|default(10)|int %}
+  {% set E = params.E|default(-20)|int %}
+  {% set tool = params.tool|default(0)|int %}
+
+        SAVE_GCODE_STATE NAME=M600_state
+        PAUSE
+        STOP_LED_EFFECTS
+        SET_LED_EFFECT EFFECT=fil_change
+        G91                 ; relative positioning
+        G1 Z10              ; raise z 10 mm
+        G1 -E5 F4000        ; retract 5mm
+        G90                 ;absolute positioning
+        G1 X245 F3000       ;park position
+        G0 E10 F500         ;extrude filament to get better blob on end
+        G0 E-350 F600       ;retract additional filament to move out of melt zone
+        G90
+        G92 E0
+        SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=0
+
+#    Use this command resume during a mid print filament swap (DONT USE OCTO/MAINSAIL/DWC RESUME)
+[gcode_macro SWAP_RESUME] 
+gcode:
+    RESTORE_GCODE_STATE NAME=M600_state
+    G0 E350 F600
+    STOP_LED_EFFECTS
+    SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=1
+    resume
+
+[gcode_macro LOAD_FILAMENT]
+gcode:
+    {% set speed = params.SPEED|default(300) %}
+    {% set max_velocity = printer.configfile.settings['extruder'].max_extrude_only_velocity %}
+    SAVE_GCODE_STATE NAME=load_state
+    M300 # beep
+    G91
+    G92 E0
+    G1 E330 F{max_velocity} # fast-load
+    G1 E25 F{speed} # purge
+    STOP_LED_EFFECTS
+    RESTORE_GCODE_STATE NAME=load_state
+
+[gcode_macro UNLOAD_FILAMENT]
+gcode:
+    {% set speed = params.SPEED|default(300) %}
+    {% set max_velocity = printer.configfile.settings['extruder'].max_extrude_only_velocity %}
+    SAVE_GCODE_STATE NAME=unload_state
+    G91
+    M300 # beep
+    G92 E0
+    G1 E25 F{speed} # purge
+    G1 E-420 F{max_velocity} # fast-unload
+    STOP_LED_EFFECTS
+    SET_LED_EFFECT EFFECT=fil_change
+    RESTORE_GCODE_STATE NAME=unload_state
+
+[delayed_gcode DISABLEFILAMENTSENSOR] ; This will disable the SFS 1 second after klipper starts
+initial_duration: 1
+gcode:
+    SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=0 ; Put your filament sensor's name after SENSOR=
+
+[gcode_macro SFS_ENABLE] ; Add this to PRINT_START
+description: Enable smart filament sensor
+gcode:
+    M117 ENABLING the Smart Filament Sensor
+    G92 E0
+    SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=1 ; Put your filament sensor's name after SENSOR=
+
+[gcode_macro SFS_DISABLE] ; Add this to PRINT_END and PRINT_CANCEL
+description: Disable smart filament sensor 
+gcode:
+    M117 DISABLING the Smart Filament Sensor
+    G92 E0
+    SET_FILAMENT_SENSOR SENSOR=bttsfs ENABLE=0 ; Put your filament sensor's name after SENSOR=
+
+
+##########LED Macros
+[gcode_macro status_mesh]
+gcode:
+    STOP_LED_EFFECTS
+    SET_LED_EFFECT EFFECT=mesh_chase
+
+[gcode_macro status_filchg]
+gcode:
+    STOP_LED_EFFECTS
+    SET_LED_EFFECT EFFECT=fil_change
+
+[gcode_macro status_heating]
+gcode:
+    STOP_LED_EFFECTS
+    SET_LED_EFFECT EFFECT=heaterfire
+
+[gcode_macro status_calibrating_z]
+gcode:
+    STOP_LED_EFFECTS
+    SET_LED_EFFECT EFFECT=calibrating_z
+
+[gcode_macro leds_off]
+gcode:
+  STOP_LED_EFFECTS
+
+
+    
